@@ -1,0 +1,731 @@
+package com.venus.jdbc.driver;
+
+import com.oscar.Config;
+import com.oscar.dispatcher.core.ConnectionMangerV2;
+import com.oscar.dispatcher.entity.DispatchConnection;
+import com.oscar.jdbc.OscarJdbc2BulkConnection;
+import com.oscar.jdbc.OscarJdbc2Connection;
+import com.oscar.util.MessageTranslator;
+import com.oscar.util.OSQLException;
+import com.oscar.util.TrackLog;
+import com.oscar.util.VersionConfig;
+import com.p6spy.engine.common.ConnectionInformation;
+import com.p6spy.engine.common.P6LogQuery;
+import com.p6spy.engine.event.JdbcEventListener;
+import com.p6spy.engine.spy.DefaultJdbcEventListenerFactory;
+import com.p6spy.engine.spy.JdbcEventListenerFactory;
+import com.p6spy.engine.spy.P6ModuleManager;
+import com.p6spy.engine.spy.P6SpyOptions;
+import com.p6spy.engine.wrapper.ConnectionWrapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.*;
+import java.sql.*;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class VenusDriver implements Driver {
+   private static final Logger log = LoggerFactory.getLogger("p6spy");
+   private static String ORACLE = "oracle.jdbc.driver.OracleDriver";
+   private static String DB2 = "com.ibm.db2.jcc.DB2DriverNew";
+   private static String MYSQL = "com.mysql.jdbc.OriginalDriver";
+   private static String SQL_SERVER = "net.sourceforge.jtds.jdbc.OriginalDriver";
+   private static String SYBASE = "net.sourceforge.jtds.jdbc.OriginalDriver";
+   private static String PG = "org.postgresql.OriginalDriver";
+   private static String OSCAR = "com.oscar.Driver";
+   private static Driver INSTANCE = new VenusDriver();
+   private static JdbcEventListenerFactory jdbcEventListenerFactory;
+
+
+   public static volatile TrackLog trackLog;
+
+   public static final AtomicInteger sessionID = new AtomicInteger(0);
+
+   public static final boolean debug = false;
+
+   public static final boolean err = true;
+
+   public static final boolean out = false;
+
+   public static final String AUTH_TYPE_PW = "PW";
+
+   public static final String AUTH_TYPE_OS = "OS";
+
+   public static final String AUTH_TYPE_FP = "FP";
+
+   public static final String AUTH_TYPE_RA = "RA";
+
+   public static final boolean JDBC3 = "1.4".compareTo(System.getProperty("java.specification.version")) <= 0;
+   private final VersionConfig versionConfig = VersionConfig.getInstance();
+   private static Config config;
+   public static final Object[][] knownProperties;
+   public static final String[] chinaTimeZone;
+   private static final String[] protocols;
+
+//   public boolean acceptsURL(String url) {
+//      return true;
+//   }
+
+   private String extractRealUrl(String url) throws SQLException {
+      return url;
+   }
+
+   static List<Driver> registeredDrivers() {
+      try {
+         DriverManager.deregisterDriver(INSTANCE);
+         List<Driver> result = new ArrayList();
+         String driverlist = P6SpyOptions.getActiveInstance().getDriverlist();
+         if (driverlist != null && !driverlist.equals("")) {
+            String[] var2 = driverlist.split(",");
+            int var3 = var2.length;
+
+            for (int var4 = 0; var4 < var3; ++var4) {
+               String driverClassName = var2[var4];
+               Driver d = (Driver) Class.forName(driverClassName).newInstance();
+               DriverManager.registerDriver(d);
+            }
+         }
+
+         Enumeration<Driver> driverEnumeration = DriverManager.getDrivers();
+
+         while (driverEnumeration.hasMoreElements()) {
+            Driver d = (Driver) driverEnumeration.nextElement();
+            result.add(d);
+         }
+
+         return result;
+      } catch (ClassNotFoundException | IllegalAccessException | InstantiationException | SQLException var7) {
+         var7.printStackTrace();
+      }
+
+      return null;
+   }
+
+   public Connection connect(String url, Properties properties) throws SQLException {
+      Driver passThru = this.findPassthru(url);
+      P6LogQuery.debug("this is " + this + " and passthru is " + passThru);
+      log.info("connect--001,url:" + url);
+      long start = System.nanoTime();
+      if (jdbcEventListenerFactory == null) {
+         jdbcEventListenerFactory = new DefaultJdbcEventListenerFactory();
+      }
+
+      JdbcEventListener jdbcEventListener = jdbcEventListenerFactory.createJdbcEventListener();
+      ConnectionInformation connectionInformation = ConnectionInformation.fromDriver(passThru);
+      jdbcEventListener.onBeforeGetConnection(connectionInformation);
+
+      try {
+         Connection conn = passThru.connect(this.extractRealUrl(url), properties);
+         log.info("properties文件输出信息...start");
+         Iterator var9 = properties.stringPropertyNames().iterator();
+
+         while (var9.hasNext()) {
+            String key = (String) var9.next();
+            log.info(key + "=" + properties.getProperty(key));
+         }
+
+         log.info("properties文件输出信息...end");
+         if (passThru.getClass().getName().equals(ORACLE)) {
+            connectionInformation.setDbType("oracle");
+         } else if (passThru.getClass().getName().equals(DB2)) {
+            connectionInformation.setDbType("db2");
+         } else if (passThru.getClass().getName().equals(MYSQL)) {
+            connectionInformation.setDbType("mysql");
+         } else if (passThru.getClass().getName().equals(SQL_SERVER)) {
+            connectionInformation.setDbType("sqlserver");
+         } else if (passThru.getClass().getName().equals(SYBASE)) {
+            connectionInformation.setDbType("sybase");
+         } else if (passThru.getClass().getName().equals(OSCAR)) {
+            connectionInformation.setDbType("oscar");
+         } else {
+            if (!passThru.getClass().getName().equals(PG)) {
+               throw new Exception("暂不支持该类型数据库:" + passThru.getClass().getName());
+            }
+
+            connectionInformation.setDbType("postgresql");
+         }
+
+         connectionInformation.setConnection(conn);
+         connectionInformation.setUrl(url);
+         connectionInformation.setUserName(properties.get("user").toString());
+         connectionInformation.setTimeToGetConnectionNs(System.nanoTime() - start);
+         jdbcEventListener.onAfterGetConnection(connectionInformation, (SQLException) null);
+         return ConnectionWrapper.wrap(conn, jdbcEventListener, connectionInformation);
+      } catch (SQLException var11) {
+         connectionInformation.setTimeToGetConnectionNs(System.nanoTime() - start);
+         jdbcEventListener.onAfterGetConnection(connectionInformation, var11);
+         throw var11;
+      } catch (Exception var12) {
+         var12.printStackTrace();
+         return null;
+      }
+   }
+
+   protected Driver findPassthru(String url) throws SQLException {
+      P6ModuleManager.getInstance();
+      String realUrl = this.extractRealUrl(url);
+      Driver passthru = null;
+      Iterator var4 = registeredDrivers().iterator();
+
+      while (var4.hasNext()) {
+         Driver driver = (Driver) var4.next();
+
+         try {
+            if (driver.acceptsURL(realUrl)) {
+               passthru = driver;
+               break;
+            }
+         } catch (SQLException var7) {
+         }
+      }
+
+      if (passthru == null) {
+         throw new SQLException("Unable to find a driver that accepts " + realUrl);
+      } else {
+         return passthru;
+      }
+   }
+
+   public DriverPropertyInfo[] getPropertyInfo(String url, Properties properties) throws SQLException {
+      return this.findPassthru(url).getPropertyInfo(url, properties);
+   }
+
+   //public int getMajorVersion() {
+   //   return 2;
+   //}
+
+//   public int getMinorVersion() {
+//      return 0;
+//   }
+
+//   public boolean jdbcCompliant() {
+//      return true;
+//   }
+
+   public java.util.logging.Logger getParentLogger() throws SQLFeatureNotSupportedException {
+      throw new SQLFeatureNotSupportedException("Feature not supported");
+   }
+
+   public static void setJdbcEventListenerFactory(JdbcEventListenerFactory jdbcEventListenerFactory) {
+      VenusDriver.jdbcEventListenerFactory = jdbcEventListenerFactory;
+   }
+
+
+   private Connection commonConnection(long loginTimeout, String url, Properties props) throws SQLException {
+      if (loginTimeout <= 0L)
+         return makeConnection(url, props);
+      com.venus.jdbc.driver.VenusDriver.ConnectThread ct = new com.venus.jdbc.driver.VenusDriver.ConnectThread(url, props);
+      (new Thread(ct, "OSCAR JDBC driver connection thread " + ct.hashCode())).start();
+      return ct.getResult(loginTimeout);
+   }
+
+   private Connection dispatchConnection(long loginTimeout, String url, Properties props, int rwha) throws SQLException {
+      boolean hasNext = true;
+      Object hostsObject = props.get("DBHOSTS");
+      String[] hosts = (hostsObject != null) ? (String[]) hostsObject : null;
+      String hostsIndex = props.getProperty("DBHOSTS_INDEX");
+      int dbHosts_index = (hostsIndex == null) ? -1 : Integer.valueOf(hostsIndex).intValue();
+      Connection firstConnection = null;
+      while (true) {
+         DispatchConnection dispatchConnection = null;
+         try {
+            DispatchConnection dispatchConnection1 = null;
+            Connection conn = commonConnection(loginTimeout, url, props);
+            if (hosts == null || ((OscarJdbc2Connection) conn).isMaster()) {
+               String password = (props.getProperty("PASSWORD") == null) ? "" : props.getProperty("PASSWORD");
+               String database = props.getProperty("DBNAME", "");
+               dispatchConnection1 = ConnectionMangerV2.createConnection((OscarJdbc2Connection) conn, password, database, props, ((OscarJdbc2Connection) conn).initSlavesInfo(props));
+            }
+            if (hosts != null) {
+               if (dispatchConnection1 instanceof DispatchConnection) {
+                  hasNext = false;
+                  if (firstConnection != null)
+                     try {
+                        firstConnection.close();
+                     } catch (SQLException e) {
+                     }
+                  return (Connection) dispatchConnection1;
+               }
+               if (firstConnection == null) {
+                  dispatchConnection = dispatchConnection1;
+               } else {
+                  try {
+                     dispatchConnection1.close();
+                  } catch (SQLException e) {
+                  }
+               }
+               dbHosts_index++;
+               if (dbHosts_index >= hosts.length) {
+                  if (rwha == 2)
+                     return (Connection) dispatchConnection;
+                  throw new OSQLException("OSCAR-00126", "88888", 126);
+               }
+               setNextHost(hosts, dbHosts_index, props);
+            } else {
+               return (Connection) dispatchConnection1;
+            }
+         } catch (SQLException e) {
+            if (hostsIndex != null) {
+               dbHosts_index++;
+               if (dbHosts_index >= hosts.length) {
+                  if (dispatchConnection != null) {
+                     if (rwha == 2)
+                        return (Connection) dispatchConnection;
+                     throw new OSQLException("OSCAR-00126", "88888", 126);
+                  }
+                  throw e;
+               }
+               setNextHost(hosts, dbHosts_index, props);
+            } else {
+               throw e;
+            }
+         }
+         if (!hasNext)
+            return null;
+      }
+   }
+
+   private Connection masterConnection(long loginTimeout, String url, Properties props, int rwha) throws SQLException {
+      boolean hasNext = true;
+      Object hostsObject = props.get("DBHOSTS");
+      String[] hosts = (hostsObject != null) ? (String[]) hostsObject : null;
+      String hostsIndex = props.getProperty("DBHOSTS_INDEX");
+      int dbHostsIndex = (hostsIndex == null) ? -1 : Integer.valueOf(hostsIndex).intValue();
+      Connection firstConnection = null;
+      boolean noMaster = false;
+      while (true) {
+         try {
+            Connection conn = commonConnection(loginTimeout, url, props);
+            if (hosts != null) {
+               if (((OscarJdbc2Connection) conn).isMaster()) {
+                  hasNext = false;
+                  if (firstConnection != null)
+                     try {
+                        firstConnection.close();
+                     } catch (SQLException e) {
+                     }
+                  return conn;
+               }
+               if (firstConnection == null) {
+                  firstConnection = conn;
+               } else {
+                  try {
+                     conn.close();
+                  } catch (SQLException e) {
+                  }
+               }
+               dbHostsIndex++;
+               if (dbHostsIndex >= hosts.length) {
+                  if (rwha == 2)
+                     return firstConnection;
+                  noMaster = true;
+                  throw new OSQLException("OSCAR-00126", "88888", 126);
+               }
+               setNextHost(hosts, dbHostsIndex, props);
+            } else {
+               return conn;
+            }
+         } catch (SQLException e) {
+            if (hostsIndex != null && !noMaster) {
+               dbHostsIndex++;
+               if (dbHostsIndex >= hosts.length) {
+                  if (firstConnection != null) {
+                     if (rwha == 2)
+                        return firstConnection;
+                     throw new OSQLException("OSCAR-00126", "88888", 126);
+                  }
+                  throw e;
+               }
+               setNextHost(hosts, dbHostsIndex, props);
+            } else {
+               throw e;
+            }
+         }
+         if (!hasNext)
+            return null;
+      }
+   }
+
+   public void setNextHost(String[] hosts, int dbHosts_index, Properties props) {
+      String hostAndPort = hosts[dbHosts_index];
+      StringTokenizer tokener = new StringTokenizer(hostAndPort, ":", true);
+      if (tokener.countTokens() == 1) {
+         props.put("DBHOST", hostAndPort);
+      } else {
+         int index = hostAndPort.lastIndexOf(":");
+         String host = hostAndPort.substring(0, index);
+         String port = hostAndPort.substring(index + 1, hostAndPort.length());
+         props.put("DBHOST", host);
+         props.put("DBPORT", Integer.decode(port).toString());
+      }
+   }
+
+   private Connection makeConnection(String url, Properties props) throws SQLException {
+      boolean useBulkInsertBatch = Boolean.valueOf(props.getProperty("USEBULKINSERTBATCH", "FALSE")).booleanValue();
+      OscarJdbc2Connection con = null;
+      if (useBulkInsertBatch) {
+         OscarJdbc2BulkConnection oscarJdbc2BulkConnection = new OscarJdbc2BulkConnection();
+      } else {
+         con = new OscarJdbc2Connection();
+      }
+      con.sessionID = Integer.valueOf(sessionID.getAndIncrement());
+      String host = props.getProperty("DBHOST", "localhost");
+      int port = Integer.parseInt(props.getProperty("DBPORT", "2003"));
+      String database = props.getProperty("DBNAME", "");
+      con.openConnection(host, port, props, database, url, this);
+      if (trackLog != null && trackLog.getLogLevel() > 0)
+         trackLog.writeLog("session " + con.getSessionID() + " JDBC 连接信息：" + props.toString());
+      return (Connection) con;
+   }
+
+   private void checkTrackLog(Properties props) {
+      Object logLevel = props.get("LOGLEVEL");
+      if (logLevel != null && trackLog == null)
+         synchronized (this) {
+            if (trackLog == null) {
+               int iLogLevel = Integer.parseInt(logLevel.toString());
+               trackLog = TrackLog.getInstance();
+               trackLog.setLogLevel(iLogLevel);
+               Object logFilePath = props.get("LOGFILEPATH");
+               if (logFilePath != null && !"".equals(logFilePath)) {
+                  trackLog.initLogPath(logFilePath.toString());
+               } else {
+                  trackLog.initLogPath(Config.defultLogPath);
+               }
+               Object maxFileSize = props.get("MAXFILESIZE");
+               if (maxFileSize != null)
+                  trackLog.setMaxFileSize(Integer.parseInt(maxFileSize.toString()));
+            }
+         }
+   }
+
+   public boolean acceptsURL(String url) throws SQLException {
+      if (parseURL(url, null) == null)
+         return false;
+      return true;
+   }
+
+//   public DriverPropertyInfo[] getPropertyInfo(String url, Properties info) throws SQLException {
+//      Properties newPro = this.parseURL(url, info);
+//      DriverPropertyInfo[] props = new DriverPropertyInfo[knownProperties.length];
+//
+//      for (int i = 0; i < knownProperties.length; ++i) {
+//         String name = (String) knownProperties[i][0];
+//         String value = newPro.getProperty(name);
+//         props[i] = new DriverPropertyInfo(name, value);
+//         props[i].required = (Boolean) knownProperties[i][1];
+//         props[i].description = (String) knownProperties[i][2];
+//         if (value == null && knownProperties[i].length > 3) {
+//            props[i].value = (String) knownProperties[i][3];
+//         }
+//
+//         if (knownProperties[i].length > 4) {
+//            props[i].choices = (String[]) ((String[]) knownProperties[i][4]);
+//         }
+//      }
+//
+//      return props;
+//   }
+
+   public int getMajorVersion() {
+      return this.versionConfig.getDriverMajorVersion();
+   }
+
+   public int getMinorVersion() {
+      return this.versionConfig.getDriverMinorVersion();
+   }
+
+   public static String getVersion() {
+      VersionConfig vc = VersionConfig.getInstance();
+      return vc.getDriverMajorVersion() + "." + vc.getDriverMinorVersion();
+   }
+
+   public boolean jdbcCompliant() {
+      return true;
+   }
+
+   //private static String[] protocols = new String[] { "jdbc", ":", "oscar", ":" };
+
+   Properties parseURL(String url, Properties defaults) throws SQLException {
+      Properties urlProps = new Properties();
+      int state = -1;
+      if (defaults != null) {
+         Object o = null;
+         String destKey = null;
+         for (Enumeration<Object> e = defaults.keys(); e.hasMoreElements(); ) {
+            o = e.nextElement();
+            destKey = ((String) o).toUpperCase();
+            urlProps.put(destKey, defaults.get(o));
+         }
+      }
+      String l_urlServer = url;
+      String l_urlArgs = "";
+      int l_qPos = url.indexOf('?');
+      if (l_qPos == -1)
+         l_qPos = url.indexOf(';');
+      if (l_qPos != -1) {
+         l_urlServer = url.substring(0, l_qPos);
+         l_urlArgs = url.substring(l_qPos + 1);
+      }
+      StringTokenizer st = new StringTokenizer(l_urlServer, "/", true);
+      StringTokenizer tokener = null;
+      String token = null;
+      String[] hosts = null;
+      for (int count = 0; st.hasMoreTokens(); count++) {
+         token = st.nextToken();
+         if (count == 0) {
+            tokener = new StringTokenizer(token, ":", true);
+            for (int tcount = 0; tokener.hasMoreTokens(); tcount++) {
+               if (tcount > 3 || !tokener.nextToken().equals(protocols[tcount]))
+                  return null;
+            }
+         } else if (count == 1 || count == 2) {
+            state = 1;
+         } else if (count == 3 && state == 1) {
+            if (token.indexOf(",") != -1) {
+               hosts = token.split(",");
+            } else {
+               tokener = new StringTokenizer(token, ":", true);
+               if (tokener.countTokens() == 1) {
+                  urlProps.put("DBHOST", token);
+               } else {
+                  int index = token.lastIndexOf(":");
+                  String host = token.substring(0, index);
+                  String port = token.substring(index + 1, token.length());
+                  if (tokener.countTokens() > 1) {
+                     state = 2;
+                  } else {
+                     state = 3;
+                  }
+                  urlProps.put("DBHOST", host);
+                  urlProps.put("DBPORT", Integer.decode(port).toString());
+               }
+            }
+         } else if (count == 4) {
+            state = 4;
+         } else if (count == 5 && state == 4) {
+            urlProps.put("DBNAME", token);
+            state = -2;
+         }
+      }
+      StringTokenizer qst = new StringTokenizer(l_urlArgs, "&");
+      for (int i = 0; qst.hasMoreTokens(); i++) {
+         String gtoken = qst.nextToken().trim();
+         int l_pos = gtoken.indexOf('=');
+         if (l_pos == -1) {
+            urlProps.put(gtoken.toUpperCase().trim(), "");
+         } else {
+            String key = gtoken.substring(0, l_pos);
+            String value = gtoken.substring(l_pos + 1);
+            urlProps.put((key == null) ? key : key.toUpperCase().trim(), (value == null) ? value : value.trim());
+         }
+      }
+      Object configPath = urlProps.get("CONFIGFILE");
+      Properties configProps = null;
+      if (configPath != null) {
+         configProps = new Properties();
+         try {
+            File f = new File(configPath.toString());
+            if (f.exists()) {
+               InputStream is = new FileInputStream(f);
+               Properties tmpProp = new Properties();
+               tmpProp.load(is);
+               if (tmpProp != null) {
+                  Object o = null;
+                  String destKey = null;
+                  for (Enumeration<Object> e = tmpProp.keys(); e.hasMoreElements(); ) {
+                     o = e.nextElement();
+                     destKey = ((String) o).toUpperCase();
+                     configProps.put(destKey, tmpProp.get(o));
+                  }
+               }
+            }
+         } catch (IOException ex) {
+         }
+      } else {
+         configProps = Config.configProp;
+      }
+      if (configProps != null)
+         for (Enumeration<Object> e = configProps.keys(); e.hasMoreElements(); ) {
+            Object obj = e.nextElement();
+            if (urlProps.get(obj) == null)
+               urlProps.put(obj, configProps.get(obj));
+         }
+      if (hosts != null) {
+         urlProps.put("DBHOSTS", hosts);
+         String hostAndPort = hosts[0];
+         urlProps.setProperty("DBHOSTS_INDEX", "0");
+         tokener = new StringTokenizer(hostAndPort, ":", true);
+         if (tokener.countTokens() == 1) {
+            urlProps.put("DBHOST", hostAndPort);
+         } else {
+            int index = hostAndPort.lastIndexOf(":");
+            String host = hostAndPort.substring(0, index);
+            String port = hostAndPort.substring(index + 1, hostAndPort.length());
+            urlProps.put("DBHOST", host);
+            urlProps.put("DBPORT", Integer.decode(port).toString());
+         }
+      }
+      return urlProps;
+   }
+
+   public static SQLException notImplemented() throws SQLException {
+      return new SQLFeatureNotSupportedException("oscar.unimplemented");
+   }
+
+   public static boolean sslEnabled() {
+      return true;
+   }
+
+   public static int getLogLevel() {
+      if (trackLog == null)
+         return 0;
+      return trackLog.getLogLevel();
+   }
+
+   public static void writeLog(String msg) {
+      if (trackLog != null && (trackLog.getLogLevel() > 0 || trackLog.getLogLevel() == -1))
+         trackLog.writeLog(msg);
+   }
+
+   public static void writeLog(Integer conId, int sessionId, String msg) {
+      if (trackLog != null && (trackLog.getLogLevel() > 0 || trackLog.getLogLevel() == -1))
+         trackLog.writeLog("conid: " + conId + ", /*Session " + sessionId + "*/ " + msg);
+   }
+
+   public static void writeLog(String prefix, Throwable throwable) {
+      if (trackLog != null && (trackLog.getLogLevel() > 0 || trackLog.getLogLevel() == -1)) {
+         String msg = getStackTrace(throwable);
+         msg = (prefix == null) ? msg : (prefix + " " + msg);
+         trackLog.writeLog(msg);
+      }
+   }
+
+   public static void writeLog(Throwable throwable) {
+      writeLog(null, throwable);
+   }
+
+   public static String getStackTrace(Throwable throwable) {
+      StringWriter sw = new StringWriter();
+      PrintWriter pw = null;
+      try {
+         pw = new PrintWriter(sw, true);
+         throwable.printStackTrace(pw);
+         pw.flush();
+      } finally {
+         pw.close();
+      }
+      return sw.getBuffer().toString();
+   }
+
+   private class ConnectThread implements Runnable {
+      private String url;
+
+      private Properties props;
+
+      private Connection result;
+
+      private Throwable resultException;
+
+      private boolean abandoned = false;
+
+      ConnectThread(String url, Properties props) {
+         this.url = url;
+         this.props = props;
+      }
+
+      public void run() {
+         Connection conn = null;
+         Throwable error = null;
+         try {
+            conn = com.venus.jdbc.driver.VenusDriver.this.makeConnection(this.url, this.props);
+            error = null;
+         } catch (Throwable t) {
+            error = t;
+         }
+         synchronized (this) {
+            if (this.abandoned) {
+               if (conn != null)
+                  try {
+                     conn.close();
+                  } catch (SQLException e) {
+                  }
+            } else {
+               this.result = conn;
+               this.resultException = error;
+               notify();
+            }
+         }
+      }
+
+      public Connection getResult(long timeout) throws SQLException {
+         if (com.oscar.Driver.getLogLevel() != 0)
+            com.oscar.Driver.trackLog.writeLog("getResultAsConnection start, hashcode:" + hashCode());
+         long expiry = System.currentTimeMillis() + timeout;
+         synchronized (this) {
+            while (true) {
+               if (this.result != null) {
+                  if (com.oscar.Driver.getLogLevel() != 0)
+                     com.oscar.Driver.trackLog.writeLog("getResultAsConnection return, session: " + ((OscarJdbc2Connection) this.result).getSessionID() + " hashcode: " + hashCode());
+                  return this.result;
+               }
+               if (this.resultException != null) {
+                  if (this.resultException instanceof SQLException) {
+                     this.resultException.fillInStackTrace();
+                     com.oscar.Driver.writeLog("getResultAsConnection, hashcode: " + hashCode() + "exception on new connection:", this.resultException);
+                     throw (SQLException) this.resultException;
+                  }
+                  com.oscar.Driver.writeLog("getResultAsConnection timeout1--" + timeout + " hashcode: " + hashCode());
+                  throw new OSQLException("OSCAR-00121", "08001", 121);
+               }
+               long delay = expiry - System.currentTimeMillis();
+               if (delay <= 0L) {
+                  this.abandoned = true;
+                  com.oscar.Driver.writeLog("getResultAsConnection timeout2--" + timeout + " hashcode: " + hashCode());
+                  throw new OSQLException("OSCAR-00122", "08001", 122);
+               }
+               try {
+                  wait(delay);
+               } catch (InterruptedException ie) {
+                  this.abandoned = true;
+                  com.oscar.Driver.writeLog("getResultAsConnection timeout3--" + timeout + " hashcode: " + hashCode());
+                  throw new OSQLException("OSCAR-00123", "08001", 123);
+               }
+            }
+         }
+      }
+   }
+
+//   public java.util.logging.Logger getParentLogger() throws SQLFeatureNotSupportedException {
+//      throw new SQLFeatureNotSupportedException();
+//   }
+
+   static {
+      knownProperties = new Object[][]{{"DBNAME", Boolean.TRUE, MessageTranslator.translate("DRIVER_DBNAME")}, {"DBHOST", Boolean.TRUE, MessageTranslator.translate("DRIVER_DBHOST")}, {"DBPORT", Boolean.TRUE, "DRIVER_DBPORT"}, {"LOGLEVEL", Boolean.FALSE, MessageTranslator.translate("DRIVER_LOGLEVEL"), "0", new String[]{"0", "1", "2", "3", "4"}}, {"LOGFILEPATH", Boolean.FALSE, MessageTranslator.translate("DRIVER_LOGFILEPATH")}, {"LOGINTIMEOUT", Boolean.FALSE, MessageTranslator.translate("DRIVER_LOGINTIMEOUT"), "0"}, {"REQUESTTIMEOUT", Boolean.FALSE, MessageTranslator.translate("DRIVER_REQUESTTIMEOUT"), "0"}, {"NOTREALPREPARE", Boolean.FALSE, MessageTranslator.translate("DRIVER_NOTREALPREPARE"), "false", new String[]{"true", "false"}}, {"COMPATIBLEOLDPROTOCOL", Boolean.FALSE, MessageTranslator.translate("DRIVER_COMPATIBLEOLDPROTOCOL"), "false", new String[]{"true", "false"}}, {"FETCHSIZE", Boolean.FALSE, MessageTranslator.translate("DRIVER_FETCHSIZE"), "16"}, {"PREPARESIMPLEEXECUTE", Boolean.FALSE, MessageTranslator.translate("DRIVER_PREPARESIMPLEEXECUTE"), "true", new String[]{"true", "false"}}, {"VERIFYPOOLCONNECTIN", Boolean.FALSE, MessageTranslator.translate("DRIVER_VERIFYPOOLCONNECTIN"), "false", new String[]{"true", "false"}}, {"USEASYNBATCH", Boolean.FALSE, MessageTranslator.translate("DRIVER_USEASYNBATCH"), "false", new String[]{"true", "false"}}, {"BATCHCOUNT", Boolean.FALSE, MessageTranslator.translate("DRIVER_BATCHCOUNT"), "0"}, {"TCPKEEPALIVE", Boolean.FALSE, MessageTranslator.translate("DRIVER_TCPKEEPALIVE"), "false", new String[]{"true", "false"}}, {"USEDISPATCH", Boolean.FALSE, MessageTranslator.translate("DRIVER_USEDISPATCH"), "false", new String[]{"true", "false"}}, {"USEASYNCHRONOUS", Boolean.FALSE, MessageTranslator.translate("DRIVER_USEASYNCHRONOUS"), "true", new String[]{"true", "false"}}, {"USESLAVESYNCREAD", Boolean.FALSE, MessageTranslator.translate("DRIVER_USESLAVESYNCREAD"), "false", new String[]{"true", "false"}}, {"TRANSACTIONDISPATCHSTRATEGY", Boolean.FALSE, MessageTranslator.translate("DRIVER_TRANSACTIONDISPATCHSTRATEGY"), "1", new String[]{"1", "2", "3"}}, {"VALIDTESTSTRING", Boolean.FALSE, MessageTranslator.translate("DRIVER_VALIDTESTSTRING"), "select 1", new String[]{"select 'mpp nodeagent probeing'", "select 'user direct testing'", "select 'mpp master probeing'"}}, {"CHECKDBLINKSQL", Boolean.FALSE, MessageTranslator.translate("DRIVER_CHECKDBLINKSQL"), "false", new String[]{"true", "false"}}, {"SENDBINARYTYPEASHEX", Boolean.FALSE, MessageTranslator.translate("DRIVER_SENDBINARYTYPEASHEX"), "false", new String[]{"true", "false"}}};
+      chinaTimeZone = new String[]{"Asia/Chongqing", "Asia/Chungking", "Asia/Harbin", "Asia/Shanghai", "CTT", "PRC"};
+
+      try {
+         if (Arrays.asList(chinaTimeZone).contains(TimeZone.getDefault().getID())) {
+            TimeZone.setDefault(TimeZone.getTimeZone("GMT+8"));
+         }
+
+         config = new Config();
+         config.init();
+         //DriverManager.registerDriver(new com.oscar.Driver());
+         log.info("VenusDriver init...");
+         Enumeration<Driver> em = DriverManager.getDrivers();
+
+         while (em.hasMoreElements()) {
+            Driver d = (Driver) em.nextElement();
+            DriverManager.deregisterDriver(d);
+         }
+         DriverManager.registerDriver(INSTANCE);
+      } catch (SQLException var1) {
+         var1.printStackTrace();
+         throw new IllegalStateException("Could not register VenusDriver with DriverManager", var1);
+      }
+
+      protocols = new String[]{"jdbc", ":", "oscar", ":"};
+   }
+}
