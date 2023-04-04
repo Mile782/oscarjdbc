@@ -3,11 +3,10 @@ package com.venus.jdbc.driver;
 import com.oscar.Config;
 import com.oscar.dispatcher.core.ConnectionMangerV2;
 import com.oscar.dispatcher.entity.DispatchConnection;
+import com.oscar.dispatcher.pool.oscar.util.TrackLog;
 import com.oscar.jdbc.OscarJdbc2BulkConnection;
 import com.oscar.jdbc.OscarJdbc2Connection;
-import com.oscar.util.MessageTranslator;
 import com.oscar.util.OSQLException;
-import com.oscar.util.TrackLog;
 import com.oscar.util.VersionConfig;
 import com.p6spy.engine.common.ConnectionInformation;
 import com.p6spy.engine.common.P6LogQuery;
@@ -15,14 +14,16 @@ import com.p6spy.engine.event.JdbcEventListener;
 import com.p6spy.engine.spy.DefaultJdbcEventListenerFactory;
 import com.p6spy.engine.spy.JdbcEventListenerFactory;
 import com.p6spy.engine.spy.P6ModuleManager;
-import com.p6spy.engine.spy.P6SpyOptions;
 import com.p6spy.engine.wrapper.ConnectionWrapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.*;
 import java.sql.*;
-import java.util.*;
+import java.util.Enumeration;
+import java.util.Iterator;
+import java.util.Properties;
+import java.util.StringTokenizer;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class VenusDriver implements Driver {
@@ -38,7 +39,7 @@ public class VenusDriver implements Driver {
    private static JdbcEventListenerFactory jdbcEventListenerFactory;
 
 
-   public static volatile TrackLog trackLog;
+   public static volatile com.oscar.dispatcher.pool.oscar.util.TrackLog trackLog;
 
    public static final AtomicInteger sessionID = new AtomicInteger(0);
 
@@ -57,11 +58,11 @@ public class VenusDriver implements Driver {
    public static final String AUTH_TYPE_RA = "RA";
 
    public static final boolean JDBC3 = "1.4".compareTo(System.getProperty("java.specification.version")) <= 0;
-   private final VersionConfig versionConfig = VersionConfig.getInstance();
+   //private final VersionConfig versionConfig = VersionConfig.getInstance();
    private static Config config;
-   public static final Object[][] knownProperties;
-   public static final String[] chinaTimeZone;
-   private static final String[] protocols;
+   public static  Object[][] knownProperties;
+   public static  String[] chinaTimeZone;
+   private static  String[] protocols;
 
 //   public boolean acceptsURL(String url) {
 //      return true;
@@ -71,38 +72,39 @@ public class VenusDriver implements Driver {
       return url;
    }
 
-   static List<Driver> registeredDrivers() {
-      try {
-         DriverManager.deregisterDriver(INSTANCE);
-         List<Driver> result = new ArrayList();
-         String driverlist = P6SpyOptions.getActiveInstance().getDriverlist();
-         if (driverlist != null && !driverlist.equals("")) {
-            String[] var2 = driverlist.split(",");
-            int var3 = var2.length;
-
-            for (int var4 = 0; var4 < var3; ++var4) {
-               String driverClassName = var2[var4];
-               Driver d = (Driver) Class.forName(driverClassName).newInstance();
-               DriverManager.registerDriver(d);
-            }
-         }
-
-         Enumeration<Driver> driverEnumeration = DriverManager.getDrivers();
-
-         while (driverEnumeration.hasMoreElements()) {
-            Driver d = (Driver) driverEnumeration.nextElement();
-            result.add(d);
-         }
-
-         return result;
-      } catch (ClassNotFoundException | IllegalAccessException | InstantiationException | SQLException var7) {
-         var7.printStackTrace();
-      }
-
-      return null;
-   }
+//   static List<Driver> registeredDrivers() {
+//      try {
+//         DriverManager.deregisterDriver(INSTANCE);
+//         List<Driver> result = new ArrayList();
+//         String driverlist = P6SpyOptions.getActiveInstance().getDriverlist();
+//         if (driverlist != null && !driverlist.equals("")) {
+//            String[] var2 = driverlist.split(",");
+//            int var3 = var2.length;
+//
+//            for (int var4 = 0; var4 < var3; ++var4) {
+//               String driverClassName = var2[var4];
+//               Driver d = (Driver) Class.forName(driverClassName).newInstance();
+//               DriverManager.registerDriver(d);
+//            }
+//         }
+//
+//         Enumeration<Driver> driverEnumeration = DriverManager.getDrivers();
+//
+//         while (driverEnumeration.hasMoreElements()) {
+//            Driver d = (Driver) driverEnumeration.nextElement();
+//            result.add(d);
+//         }
+//
+//         return result;
+//      } catch (ClassNotFoundException | IllegalAccessException | InstantiationException | SQLException var7) {
+//         var7.printStackTrace();
+//      }
+//
+//      return null;
+//   }
 
    public Connection connect(String url, Properties properties) throws SQLException {
+      System.out.println("find url:"+url);
       Driver passThru = this.findPassthru(url);
       P6LogQuery.debug("this is " + this + " and passthru is " + passThru);
       log.info("connect--001,url:" + url);
@@ -162,30 +164,50 @@ public class VenusDriver implements Driver {
       }
    }
 
+//   protected Driver findPassthru(String url) throws SQLException {
+//      P6ModuleManager.getInstance();
+//      String realUrl = this.extractRealUrl(url);
+//      System.out.println("realUrl:"+realUrl);
+//      Driver passthru = null;
+//      Iterator var4 = registeredDrivers().iterator();
+//
+//
+//
+//      while (var4.hasNext()) {
+//         Driver driver = (Driver) var4.next();
+//
+//         try {
+//            if (driver.acceptsURL(realUrl)) {
+//               passthru = driver;
+//               break;
+//            }
+//         } catch (SQLException var7) {
+//         }
+//      }
+//
+//      if (passthru == null) {
+//         throw new SQLException("Unable to find a driver that accepts " + realUrl);
+//      } else {
+//         return passthru;
+//      }
+//   }
+
    protected Driver findPassthru(String url) throws SQLException {
       P6ModuleManager.getInstance();
       String realUrl = this.extractRealUrl(url);
-      Driver passthru = null;
-      Iterator var4 = registeredDrivers().iterator();
+      System.out.println("realUrl:" + realUrl);
 
-      while (var4.hasNext()) {
-         Driver driver = (Driver) var4.next();
-
-         try {
-            if (driver.acceptsURL(realUrl)) {
-               passthru = driver;
-               break;
-            }
-         } catch (SQLException var7) {
+      Driver passthru = DriverManager.getDriver(url);
+      try {
+         if (!passthru.acceptsURL(realUrl)) {
+            throw new SQLException("Driver does not accept " + realUrl);
          }
+      } catch (SQLException e) {
+         throw new SQLException("Unable to find a driver that accepts " + realUrl, e);
       }
-
-      if (passthru == null) {
-         throw new SQLException("Unable to find a driver that accepts " + realUrl);
-      } else {
-         return passthru;
-      }
+      return passthru;
    }
+
 
    public DriverPropertyInfo[] getPropertyInfo(String url, Properties properties) throws SQLException {
       return this.findPassthru(url).getPropertyInfo(url, properties);
@@ -429,11 +451,13 @@ public class VenusDriver implements Driver {
 //   }
 
    public int getMajorVersion() {
-      return this.versionConfig.getDriverMajorVersion();
+      return 7;
+      // this.versionConfig.getDriverMajorVersion();
    }
 
    public int getMinorVersion() {
-      return this.versionConfig.getDriverMinorVersion();
+      return 20;
+              //this.versionConfig.getDriverMinorVersion();
    }
 
    public static String getVersion() {
@@ -702,16 +726,16 @@ public class VenusDriver implements Driver {
 //   }
 
    static {
-      knownProperties = new Object[][]{{"DBNAME", Boolean.TRUE, MessageTranslator.translate("DRIVER_DBNAME")}, {"DBHOST", Boolean.TRUE, MessageTranslator.translate("DRIVER_DBHOST")}, {"DBPORT", Boolean.TRUE, "DRIVER_DBPORT"}, {"LOGLEVEL", Boolean.FALSE, MessageTranslator.translate("DRIVER_LOGLEVEL"), "0", new String[]{"0", "1", "2", "3", "4"}}, {"LOGFILEPATH", Boolean.FALSE, MessageTranslator.translate("DRIVER_LOGFILEPATH")}, {"LOGINTIMEOUT", Boolean.FALSE, MessageTranslator.translate("DRIVER_LOGINTIMEOUT"), "0"}, {"REQUESTTIMEOUT", Boolean.FALSE, MessageTranslator.translate("DRIVER_REQUESTTIMEOUT"), "0"}, {"NOTREALPREPARE", Boolean.FALSE, MessageTranslator.translate("DRIVER_NOTREALPREPARE"), "false", new String[]{"true", "false"}}, {"COMPATIBLEOLDPROTOCOL", Boolean.FALSE, MessageTranslator.translate("DRIVER_COMPATIBLEOLDPROTOCOL"), "false", new String[]{"true", "false"}}, {"FETCHSIZE", Boolean.FALSE, MessageTranslator.translate("DRIVER_FETCHSIZE"), "16"}, {"PREPARESIMPLEEXECUTE", Boolean.FALSE, MessageTranslator.translate("DRIVER_PREPARESIMPLEEXECUTE"), "true", new String[]{"true", "false"}}, {"VERIFYPOOLCONNECTIN", Boolean.FALSE, MessageTranslator.translate("DRIVER_VERIFYPOOLCONNECTIN"), "false", new String[]{"true", "false"}}, {"USEASYNBATCH", Boolean.FALSE, MessageTranslator.translate("DRIVER_USEASYNBATCH"), "false", new String[]{"true", "false"}}, {"BATCHCOUNT", Boolean.FALSE, MessageTranslator.translate("DRIVER_BATCHCOUNT"), "0"}, {"TCPKEEPALIVE", Boolean.FALSE, MessageTranslator.translate("DRIVER_TCPKEEPALIVE"), "false", new String[]{"true", "false"}}, {"USEDISPATCH", Boolean.FALSE, MessageTranslator.translate("DRIVER_USEDISPATCH"), "false", new String[]{"true", "false"}}, {"USEASYNCHRONOUS", Boolean.FALSE, MessageTranslator.translate("DRIVER_USEASYNCHRONOUS"), "true", new String[]{"true", "false"}}, {"USESLAVESYNCREAD", Boolean.FALSE, MessageTranslator.translate("DRIVER_USESLAVESYNCREAD"), "false", new String[]{"true", "false"}}, {"TRANSACTIONDISPATCHSTRATEGY", Boolean.FALSE, MessageTranslator.translate("DRIVER_TRANSACTIONDISPATCHSTRATEGY"), "1", new String[]{"1", "2", "3"}}, {"VALIDTESTSTRING", Boolean.FALSE, MessageTranslator.translate("DRIVER_VALIDTESTSTRING"), "select 1", new String[]{"select 'mpp nodeagent probeing'", "select 'user direct testing'", "select 'mpp master probeing'"}}, {"CHECKDBLINKSQL", Boolean.FALSE, MessageTranslator.translate("DRIVER_CHECKDBLINKSQL"), "false", new String[]{"true", "false"}}, {"SENDBINARYTYPEASHEX", Boolean.FALSE, MessageTranslator.translate("DRIVER_SENDBINARYTYPEASHEX"), "false", new String[]{"true", "false"}}};
-      chinaTimeZone = new String[]{"Asia/Chongqing", "Asia/Chungking", "Asia/Harbin", "Asia/Shanghai", "CTT", "PRC"};
+      //knownProperties = new Object[][]{{"DBNAME", Boolean.TRUE, MessageTranslator.translate("DRIVER_DBNAME")}, {"DBHOST", Boolean.TRUE, MessageTranslator.translate("DRIVER_DBHOST")}, {"DBPORT", Boolean.TRUE, "DRIVER_DBPORT"}, {"LOGLEVEL", Boolean.FALSE, MessageTranslator.translate("DRIVER_LOGLEVEL"), "0", new String[]{"0", "1", "2", "3", "4"}}, {"LOGFILEPATH", Boolean.FALSE, MessageTranslator.translate("DRIVER_LOGFILEPATH")}, {"LOGINTIMEOUT", Boolean.FALSE, MessageTranslator.translate("DRIVER_LOGINTIMEOUT"), "0"}, {"REQUESTTIMEOUT", Boolean.FALSE, MessageTranslator.translate("DRIVER_REQUESTTIMEOUT"), "0"}, {"NOTREALPREPARE", Boolean.FALSE, MessageTranslator.translate("DRIVER_NOTREALPREPARE"), "false", new String[]{"true", "false"}}, {"COMPATIBLEOLDPROTOCOL", Boolean.FALSE, MessageTranslator.translate("DRIVER_COMPATIBLEOLDPROTOCOL"), "false", new String[]{"true", "false"}}, {"FETCHSIZE", Boolean.FALSE, MessageTranslator.translate("DRIVER_FETCHSIZE"), "16"}, {"PREPARESIMPLEEXECUTE", Boolean.FALSE, MessageTranslator.translate("DRIVER_PREPARESIMPLEEXECUTE"), "true", new String[]{"true", "false"}}, {"VERIFYPOOLCONNECTIN", Boolean.FALSE, MessageTranslator.translate("DRIVER_VERIFYPOOLCONNECTIN"), "false", new String[]{"true", "false"}}, {"USEASYNBATCH", Boolean.FALSE, MessageTranslator.translate("DRIVER_USEASYNBATCH"), "false", new String[]{"true", "false"}}, {"BATCHCOUNT", Boolean.FALSE, MessageTranslator.translate("DRIVER_BATCHCOUNT"), "0"}, {"TCPKEEPALIVE", Boolean.FALSE, MessageTranslator.translate("DRIVER_TCPKEEPALIVE"), "false", new String[]{"true", "false"}}, {"USEDISPATCH", Boolean.FALSE, MessageTranslator.translate("DRIVER_USEDISPATCH"), "false", new String[]{"true", "false"}}, {"USEASYNCHRONOUS", Boolean.FALSE, MessageTranslator.translate("DRIVER_USEASYNCHRONOUS"), "true", new String[]{"true", "false"}}, {"USESLAVESYNCREAD", Boolean.FALSE, MessageTranslator.translate("DRIVER_USESLAVESYNCREAD"), "false", new String[]{"true", "false"}}, {"TRANSACTIONDISPATCHSTRATEGY", Boolean.FALSE, MessageTranslator.translate("DRIVER_TRANSACTIONDISPATCHSTRATEGY"), "1", new String[]{"1", "2", "3"}}, {"VALIDTESTSTRING", Boolean.FALSE, MessageTranslator.translate("DRIVER_VALIDTESTSTRING"), "select 1", new String[]{"select 'mpp nodeagent probeing'", "select 'user direct testing'", "select 'mpp master probeing'"}}, {"CHECKDBLINKSQL", Boolean.FALSE, MessageTranslator.translate("DRIVER_CHECKDBLINKSQL"), "false", new String[]{"true", "false"}}, {"SENDBINARYTYPEASHEX", Boolean.FALSE, MessageTranslator.translate("DRIVER_SENDBINARYTYPEASHEX"), "false", new String[]{"true", "false"}}};
+      //chinaTimeZone = new String[]{"Asia/Chongqing", "Asia/Chungking", "Asia/Harbin", "Asia/Shanghai", "CTT", "PRC"};
 
       try {
-         if (Arrays.asList(chinaTimeZone).contains(TimeZone.getDefault().getID())) {
-            TimeZone.setDefault(TimeZone.getTimeZone("GMT+8"));
-         }
+//         if (Arrays.asList(chinaTimeZone).contains(TimeZone.getDefault().getID())) {
+//            TimeZone.setDefault(TimeZone.getTimeZone("GMT+8"));
+//         }
 
-         config = new Config();
-         config.init();
+         //config = new Config();
+         //config.init();
          //DriverManager.registerDriver(new com.oscar.Driver());
          log.info("VenusDriver init...");
          Enumeration<Driver> em = DriverManager.getDrivers();
